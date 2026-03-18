@@ -827,7 +827,7 @@ async function fetchPrices() {
     }
   });
   if (backfilled) {
-    try { sessionStorage.setItem('portfolio_positions', JSON.stringify(state.positions)); } catch(e) {}
+    try { localStorage.setItem('portfolio_positions', JSON.stringify(state.positions)); } catch(e) {}
   }
 
   computePortfolioReturn(); // calculate gross portfolio return
@@ -843,14 +843,23 @@ async function fetchSPY() {
       const data = await res.json();
       if (data.SPY) {
         state.spyPrice = data.SPY.price;
-        // Set baseline on first load
+
+        // Baseline SPY to the price when this session started
+        // sessionStorage persists through refreshes but resets when tab is closed
         if (!state.spyBaselinePrice) {
-          const saved = sessionStorage.getItem('spy_baseline');
-          state.spyBaselinePrice = saved ? parseFloat(saved) : data.SPY.price;
-          if (!saved) sessionStorage.setItem('spy_baseline', state.spyBaselinePrice);
+          const saved = sessionStorage.getItem('spy_inception_price');
+          if (saved) {
+            state.spyBaselinePrice = parseFloat(saved);
+          } else {
+            // First load this session — record current price as the starting point
+            state.spyBaselinePrice = data.SPY.price;
+            sessionStorage.setItem('spy_inception_price', String(state.spyBaselinePrice));
+            sessionStorage.setItem('spy_inception_date', new Date().toISOString().slice(0, 10));
+          }
         }
+
         state.spyReturn = ((state.spyPrice - state.spyBaselinePrice) / state.spyBaselinePrice) * 100;
-        render(); // re-render with SPY data
+        render();
       }
     }
   } catch(e) {}
@@ -869,13 +878,13 @@ function computePortfolioReturn() {
     const p = state.prices[ticker];
     if (!p) return;
     let ret;
-    if (pos.entryPrice) {
-      // Use actual entry price for true P&L
+    if (pos.entryPrice && pos.entryPrice > 0) {
+      // Use actual inception entry price for true cumulative P&L
       ret = pos.signal === 'BUY'
         ? (p.price - pos.entryPrice) / pos.entryPrice * 100
         : (pos.entryPrice - p.price) / pos.entryPrice * 100;
     } else {
-      // Fallback: use today's % change as a proxy until entry price is set
+      // Entry price not yet loaded — use today's change as proxy
       ret = pos.signal === 'BUY' ? p.change_pct : -p.change_pct;
     }
     totalReturn += ret;
@@ -892,7 +901,7 @@ function computePortfolioReturn() {
 function reconcilePositions() {
   // Load persisted positions from sessionStorage
   try {
-    const saved = sessionStorage.getItem('portfolio_positions');
+    const saved = localStorage.getItem('portfolio_positions');
     if (saved) state.positions = JSON.parse(saved);
   } catch(e) {}
 
@@ -930,9 +939,9 @@ function reconcilePositions() {
     }
   });
 
-  // 3. Persist to sessionStorage
+  // 3. Persist to localStorage so inception prices survive browser close/reopen
   try {
-    sessionStorage.setItem('portfolio_positions', JSON.stringify(state.positions));
+    localStorage.setItem('portfolio_positions', JSON.stringify(state.positions));
   } catch(e) {}
 }
 
@@ -1286,23 +1295,24 @@ function renderPortfolioView() {
       const alpha   = (portRet !== null && spyRet !== null) ? portRet - spyRet : null;
       const fmt = (v, showSign=true) => v === null ? '—' : (showSign && v >= 0 ? '+' : '') + v.toFixed(2) + '%';
       const col = (v) => v === null ? 'var(--dim)' : v >= 0 ? 'var(--buy)' : 'var(--sell)';
+      const inceptionDate = sessionStorage.getItem('spy_inception_date') || new Date().toISOString().slice(0,10);
 
       return `
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px;animation:fadeUp 0.4s ease both">
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:18px 20px;border-top:3px solid ${col(portRet)}">
           <div style="font-size:10px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px">Portfolio Return</div>
           <div style="font-family:var(--font-head);font-size:28px;font-weight:700;color:${col(portRet)}">${fmt(portRet)}</div>
-          <div style="font-size:10px;color:var(--dim);margin-top:4px">Equal-weighted avg · since session start</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:4px">conviction-weighted avg · since ${inceptionDate}</div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:18px 20px;border-top:3px solid ${col(spyRet)}">
           <div style="font-size:10px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px">S&P 500 (SPY)</div>
           <div style="font-family:var(--font-head);font-size:28px;font-weight:700;color:${col(spyRet)}">${fmt(spyRet)}</div>
-          <div style="font-size:10px;color:var(--dim);margin-top:4px">${state.spyPrice ? '$' + state.spyPrice.toLocaleString() : '—'} · since session start</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:4px">${state.spyPrice ? '$' + state.spyPrice.toLocaleString() : '—'} · since ${inceptionDate}</div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:18px 20px;border-top:3px solid ${col(alpha)}">
           <div style="font-size:10px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px">Alpha vs S&P 500</div>
           <div style="font-family:var(--font-head);font-size:28px;font-weight:700;color:${col(alpha)}">${fmt(alpha)}</div>
-          <div style="font-size:10px;color:var(--dim);margin-top:4px">Portfolio return minus SPY return</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:4px">portfolio minus SPY · since ${inceptionDate}</div>
         </div>
       </div>`;
     })()}
