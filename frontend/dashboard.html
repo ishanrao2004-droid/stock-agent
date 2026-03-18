@@ -569,6 +569,28 @@
   .price-change.neg { color: var(--sell); }
   .price-change.zero { color: var(--muted); }
   .price-loading { color: var(--muted); font-size: 11px; }
+
+  .portfolio-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; animation: fadeUp 0.4s 0.2s ease both; }
+  .portfolio-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+  .portfolio-card-title { font-family: var(--font-head); font-size: 13px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+  .portfolio-card-title.long { color: var(--buy); }
+  .portfolio-card-title.short { color: var(--sell); }
+  .portfolio-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .portfolio-row:last-child { border-bottom: none; }
+  .portfolio-ticker { font-family: var(--font-head); font-weight: 700; color: var(--bright); font-size: 13px; min-width: 60px; }
+  .portfolio-weight { color: var(--dim); font-size: 11px; }
+  .portfolio-price { font-family: var(--font-mono); color: var(--text); }
+  .portfolio-change.pos { color: var(--buy); }
+  .portfolio-change.neg { color: var(--sell); }
+  .summary-box { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 20px; animation: fadeUp 0.4s 0.1s ease both; }
+  .summary-row { display: flex; gap: 0; }
+  .summary-stat { flex: 1; padding: 0 16px; border-right: 1px solid var(--border); }
+  .summary-stat:first-child { padding-left: 0; }
+  .summary-stat:last-child { border-right: none; }
+  .summary-val { font-family: var(--font-head); font-size: 22px; font-weight: 700; color: var(--bright); }
+  .summary-lbl { font-size: 10px; color: var(--dim); letter-spacing: 1.5px; text-transform: uppercase; margin-top: 2px; }
+  .methodology-box { background: rgba(33,150,243,0.05); border: 1px solid rgba(33,150,243,0.15); border-radius: 8px; padding: 16px 20px; font-size: 11.5px; color: var(--dim); line-height: 1.8; animation: fadeUp 0.4s 0.3s ease both; }
+  .methodology-box strong { color: var(--text); }
 </style>
 </head>
 <body>
@@ -597,6 +619,9 @@
     </div>
     <div class="nav-item" onclick="setView('industries')" id="nav-industries">
       <span class="nav-icon">◈</span> Industries
+    </div>
+    <div class="nav-item" onclick="setView('portfolio')" id="nav-portfolio">
+      <span class="nav-icon">◬</span> Portfolio
     </div>
     <div class="sidebar-divider"></div>
     <div class="sidebar-label">Strategy</div>
@@ -640,6 +665,15 @@ let state = {
   search: '',
   sort: 'score',
   selected: null,
+  // Portfolio position tracking — persisted in sessionStorage
+  // { ticker: { signal: 'BUY'|'SELL', entryDate: ISO string, entryPrice: number } }
+  positions: {},
+  // Benchmark & performance tracking
+  spyPrice: null,          // current SPY price
+  spyBaselinePrice: null,  // SPY price when portfolio was first initialized
+  portfolioBaseline: null, // portfolio snapshot price when first initialized
+  portfolioReturn: null,   // current gross portfolio return %
+  spyReturn: null,         // SPY return over same period %
 };
 
 // ── Mock data (used when backend is not available) ─────────────────────────
@@ -745,6 +779,7 @@ async function fetchData() {
   document.getElementById('lastUpdate').textContent =
     'LAST UPDATE: ' + new Date().toLocaleTimeString();
   state.loading = false;
+  reconcilePositions(); // reconcile even before prices load
   render();
 
   // Fetch live prices in the background (non-blocking)
@@ -765,13 +800,113 @@ async function fetchPrices() {
     // Prices are optional — silently fail
   }
   state.pricesLoading = false;
+  reconcilePositions(); // update position tracking with latest signals + prices
+  computePortfolioReturn(); // calculate gross portfolio return
+  fetchSPY(); // fetch SPY benchmark (async, triggers another render when done)
   render(); // single render once prices are done
+}
+
+// ── Fetch SPY benchmark price ──────────────────────────────────────────────
+async function fetchSPY() {
+  try {
+    const res = await fetch(`${API}/prices?tickers=SPY`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.SPY) {
+        state.spyPrice = data.SPY.price;
+        // Set baseline on first load
+        if (!state.spyBaselinePrice) {
+          const saved = sessionStorage.getItem('spy_baseline');
+          state.spyBaselinePrice = saved ? parseFloat(saved) : data.SPY.price;
+          if (!saved) sessionStorage.setItem('spy_baseline', state.spyBaselinePrice);
+        }
+        state.spyReturn = ((state.spyPrice - state.spyBaselinePrice) / state.spyBaselinePrice) * 100;
+        render(); // re-render with SPY data
+      }
+    }
+  } catch(e) {}
+}
+
+// ── Compute gross portfolio return ─────────────────────────────────────────
+// Equal-weighted average of individual position P&Ls
+// Longs: profit when price rises. Shorts: profit when price falls.
+function computePortfolioReturn() {
+  const active = Object.entries(state.positions).filter(([, p]) => p.active);
+  if (!active.length) { state.portfolioReturn = null; return; }
+
+  let totalReturn = 0;
+  let counted = 0;
+  active.forEach(([ticker, pos]) => {
+    const p = state.prices[ticker];
+    if (!p || !pos.entryPrice) return;
+    let ret;
+    if (pos.signal === 'BUY') {
+      ret = (p.price - pos.entryPrice) / pos.entryPrice * 100;
+    } else {
+      ret = (pos.entryPrice - p.price) / pos.entryPrice * 100;
+    }
+    totalReturn += ret;
+    counted++;
+  });
+
+  state.portfolioReturn = counted > 0 ? totalReturn / counted : null;
+}
+
+// ── Portfolio position reconciliation ─────────────────────────────────────
+// Called after every data refresh. Adds new BUY/SELL signals to positions,
+// removes positions whose signal has changed or disappeared (exited).
+// Stores positions in sessionStorage so they survive page refreshes.
+function reconcilePositions() {
+  // Load persisted positions from sessionStorage
+  try {
+    const saved = sessionStorage.getItem('portfolio_positions');
+    if (saved) state.positions = JSON.parse(saved);
+  } catch(e) {}
+
+  const now = new Date().toISOString();
+  const currentSignals = {};
+  state.stocks.forEach(s => { currentSignals[s.ticker] = s.signal; });
+
+  // 1. Remove positions where signal has changed or stock no longer qualifies
+  Object.keys(state.positions).forEach(ticker => {
+    const pos = state.positions[ticker];
+    const currentSignal = currentSignals[ticker];
+    if (currentSignal !== pos.signal) {
+      // Signal changed — exit position, log it
+      pos.exitDate = now;
+      pos.exitSignal = currentSignal || 'NONE';
+      pos.active = false;
+    }
+  });
+
+  // 2. Add new positions for stocks that now have BUY or SELL signals
+  state.stocks.forEach(s => {
+    if (s.signal === 'HOLD') return;
+    const existing = state.positions[s.ticker];
+    if (!existing || !existing.active) {
+      // New position or re-entry after signal flip
+      const price = state.prices[s.ticker];
+      state.positions[s.ticker] = {
+        signal: s.signal,
+        entryDate: now,
+        entryPrice: price ? price.price : null,
+        active: true,
+        score: s.score,
+        industry: s.industry,
+      };
+    }
+  });
+
+  // 3. Persist to sessionStorage
+  try {
+    sessionStorage.setItem('portfolio_positions', JSON.stringify(state.positions));
+  } catch(e) {}
 }
 
 // ── Navigation ─────────────────────────────────────────────────────────────
 function setView(v) {
   state.view = v;
-  ['stocks','signals','industries'].forEach(id => {
+  ['stocks','signals','industries','portfolio'].forEach(id => {
     document.getElementById(`nav-${id}`).classList.toggle('active', id === v);
   });
   render();
@@ -1040,12 +1175,169 @@ function renderLoading() {
 }
 
 // ── Main render ────────────────────────────────────────────────────────────
+function daysSince(isoDate) {
+  if (!isoDate) return null;
+  const diff = Date.now() - new Date(isoDate).getTime();
+  return Math.floor(diff / 86400000);
+}
+
+function pnlCell(pos, currentPrice, side) {
+  if (!pos.entryPrice || !currentPrice) return '<span style="color:var(--muted);font-size:10px">—</span>';
+  let pnlPct;
+  if (side === 'long') {
+    pnlPct = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
+  } else {
+    // Short: profit when price falls
+    pnlPct = ((pos.entryPrice - currentPrice) / pos.entryPrice) * 100;
+  }
+  const col = pnlPct >= 0 ? 'var(--buy)' : 'var(--sell)';
+  const sign = pnlPct >= 0 ? '+' : '';
+  return `<span style="color:${col};font-size:10px;font-weight:600">${sign}${pnlPct.toFixed(2)}%</span>`;
+}
+
+function renderPortfolioView() {
+  const longs  = state.stocks.filter(s => s.signal === 'BUY').sort((a,b) => b.score - a.score);
+  const shorts = state.stocks.filter(s => s.signal === 'SELL').sort((a,b) => a.score - b.score);
+  const longWeight  = longs.length  ? (100 / longs.length).toFixed(1)  : 0;
+  const shortWeight = shorts.length ? (100 / shorts.length).toFixed(1) : 0;
+  const netExposure = longs.length - shorts.length;
+  const grossExposure = longs.length + shorts.length;
+
+  // Count positions that changed signal since last refresh
+  const exited = Object.values(state.positions).filter(p => !p.active).length;
+
+  function positionRows(stocks, weight, side) {
+    if (!stocks.length) return '<div style="color:var(--muted);padding:12px 0;font-size:12px">No positions</div>';
+    return stocks.map(s => {
+      const pos = state.positions[s.ticker];
+      const p = state.prices[s.ticker];
+      const days = pos ? daysSince(pos.entryDate) : null;
+      const daysStr = days === 0 ? '<span style="color:var(--accent);font-size:10px">NEW</span>'
+                    : days !== null ? `<span style="color:var(--dim);font-size:10px">${days}d</span>`
+                    : '';
+      const priceStr = p ? `<span class="portfolio-price">$${p.price.toLocaleString()}</span>` : '<span style="color:var(--muted)">—</span>';
+      const pnl = pos ? pnlCell(pos, p ? p.price : null, side) : '';
+      return `
+        <div class="portfolio-row" onclick="openDetail('${s.ticker}')" style="cursor:pointer">
+          <span class="portfolio-ticker">${s.ticker}</span>
+          <span style="font-size:10px;color:var(--dim);flex:1;padding:0 6px">${s.industry.replace('Information Technology','Tech').replace('Consumer Discretionary','Cons Disc').replace('Communication Services','Comm Svcs').replace('Consumer Staples','Cons Stpl')}</span>
+          ${daysStr}
+          <span style="font-size:10px;color:var(--dim);margin:0 8px">${weight}%</span>
+          ${priceStr}
+          <span style="margin-left:8px">${pnl}</span>
+        </div>`;
+    }).join('');
+  }
+
+  return `
+    <div class="page-header">
+      <div>
+        <div class="page-title">L/S Portfolio</div>
+        <div class="page-subtitle">Equal-weighted · signals update every 5 min · positions tracked automatically</div>
+      </div>
+    </div>
+    ${state.error ? `<div class="error-bar">⚠ ${state.error}</div>` : ''}
+
+    ${(() => {
+      const portRet = state.portfolioReturn;
+      const spyRet  = state.spyReturn;
+      const alpha   = (portRet !== null && spyRet !== null) ? portRet - spyRet : null;
+      const fmt = (v, showSign=true) => v === null ? '—' : (showSign && v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+      const col = (v) => v === null ? 'var(--dim)' : v >= 0 ? 'var(--buy)' : 'var(--sell)';
+
+      return `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px;animation:fadeUp 0.4s ease both">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:18px 20px;border-top:3px solid ${col(portRet)}">
+          <div style="font-size:10px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px">Portfolio Return</div>
+          <div style="font-family:var(--font-head);font-size:28px;font-weight:700;color:${col(portRet)}">${fmt(portRet)}</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:4px">Equal-weighted avg · since session start</div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:18px 20px;border-top:3px solid ${col(spyRet)}">
+          <div style="font-size:10px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px">S&P 500 (SPY)</div>
+          <div style="font-family:var(--font-head);font-size:28px;font-weight:700;color:${col(spyRet)}">${fmt(spyRet)}</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:4px">${state.spyPrice ? '$' + state.spyPrice.toLocaleString() : '—'} · since session start</div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:18px 20px;border-top:3px solid ${col(alpha)}">
+          <div style="font-size:10px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:6px">Alpha vs S&P 500</div>
+          <div style="font-family:var(--font-head);font-size:28px;font-weight:700;color:${col(alpha)}">${fmt(alpha)}</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:4px">Portfolio return minus SPY return</div>
+        </div>
+      </div>`;
+    })()}
+
+    <div class="summary-box">
+      <div class="summary-row">
+        <div class="summary-stat">
+          <div class="summary-val" style="color:var(--buy)">${longs.length}</div>
+          <div class="summary-lbl">Long Positions</div>
+        </div>
+        <div class="summary-stat">
+          <div class="summary-val" style="color:var(--sell)">${shorts.length}</div>
+          <div class="summary-lbl">Short Positions</div>
+        </div>
+        <div class="summary-stat">
+          <div class="summary-val">${grossExposure}</div>
+          <div class="summary-lbl">Gross Exposure</div>
+        </div>
+        <div class="summary-stat">
+          <div class="summary-val" style="color:${netExposure > 0 ? 'var(--buy)' : netExposure < 0 ? 'var(--sell)' : 'var(--text)'}">${netExposure > 0 ? '+' : ''}${netExposure}</div>
+          <div class="summary-lbl">Net Exposure</div>
+        </div>
+        <div class="summary-stat">
+          <div class="summary-val">${longWeight}%</div>
+          <div class="summary-lbl">Weight / Long</div>
+        </div>
+        <div class="summary-stat">
+          <div class="summary-val" style="color:${exited > 0 ? 'var(--hold)' : 'var(--muted)'}">${exited}</div>
+          <div class="summary-lbl">Exited (session)</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="portfolio-grid">
+      <div class="portfolio-card">
+        <div class="portfolio-card-title long">▲ Long Book — ${longs.length} positions · ${longWeight}% each</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 40px 40px 70px 60px;gap:0;padding:4px 0 6px;border-bottom:1px solid var(--border);margin-bottom:2px">
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">TICKER</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">SECTOR</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">HELD</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">WT</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">PRICE</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">P&L</span>
+        </div>
+        ${positionRows(longs, longWeight, 'long')}
+      </div>
+      <div class="portfolio-card">
+        <div class="portfolio-card-title short">▼ Short Book — ${shorts.length} positions · ${shortWeight}% each</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 40px 40px 70px 60px;gap:0;padding:4px 0 6px;border-bottom:1px solid var(--border);margin-bottom:2px">
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">TICKER</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">SECTOR</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">HELD</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">WT</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">PRICE</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">P&L</span>
+        </div>
+        ${positionRows(shorts, shortWeight, 'short')}
+      </div>
+    </div>
+
+    <div class="methodology-box">
+      <strong>Signal-driven rebalancing:</strong> Positions are opened when a stock meets BUY or SELL criteria and closed automatically when the signal changes. Days held and P&L vs entry price are tracked per position for the current session. &nbsp;·&nbsp;
+      <strong>Equal weighting:</strong> 100% of long book divided equally across all BUY signals. 100% of short book divided equally across all SELL signals. &nbsp;·&nbsp;
+      <strong>BUY criteria:</strong> score ≥ 4.0, positive momentum, top 25% in sector. &nbsp;·&nbsp;
+      <strong>SELL criteria:</strong> score ≤ 2.5, negative momentum, bottom 25% in sector. &nbsp;·&nbsp;
+      <strong>Timeframe:</strong> analyst signals reflect 3–12 month horizons.
+    </div>
+  `;
+}
+
 function render() {
   const view = document.getElementById('app-view');
   if (state.loading) { view.innerHTML = renderLoading(); return; }
-  if (state.view === 'stocks')     view.innerHTML = renderStocksView();
+  if (state.view === 'stocks')          view.innerHTML = renderStocksView();
   else if (state.view === 'signals')    view.innerHTML = renderSignalsView();
   else if (state.view === 'industries') view.innerHTML = renderIndustriesView();
+  else if (state.view === 'portfolio')  view.innerHTML = renderPortfolioView();
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
