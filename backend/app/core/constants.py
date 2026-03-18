@@ -42,7 +42,6 @@ RATING_SCORE_MAP: dict[str, float] = {
     "strong_sell": 1.0,
     "strongsell": 1.0,
     "conviction sell": 1.0,
-}
 
 # ── Mock GICS sector classification ─────────────────────────────────────────
 # Maps ticker → GICS sector name. In production this would come from a
@@ -120,7 +119,6 @@ TICKER_INDUSTRY_MAP: dict[str, str] = {
     "LIN":  "Materials",
     "APD":  "Materials",
     "FCX":  "Materials",
-}
 
 DEFAULT_INDUSTRY = "Unknown"
 
