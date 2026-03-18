@@ -591,6 +591,19 @@
   .summary-lbl { font-size: 10px; color: var(--dim); letter-spacing: 1.5px; text-transform: uppercase; margin-top: 2px; }
   .methodology-box { background: rgba(33,150,243,0.05); border: 1px solid rgba(33,150,243,0.15); border-radius: 8px; padding: 16px 20px; font-size: 11.5px; color: var(--dim); line-height: 1.8; animation: fadeUp 0.4s 0.3s ease both; }
   .methodology-box strong { color: var(--text); }
+
+  .bt-chart { width:100%; height:240px; background:var(--surface); border:1px solid var(--border); border-radius:8px; margin-bottom:20px; position:relative; overflow:hidden; }
+  .bt-canvas { position:absolute; inset:0; }
+  .bt-stat-grid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:20px; animation:fadeUp 0.4s 0.1s ease both; }
+  .bt-stat { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:14px 16px; }
+  .bt-stat-val { font-family:var(--font-head); font-size:20px; font-weight:700; }
+  .bt-stat-lbl { font-size:10px; color:var(--dim); letter-spacing:1.2px; text-transform:uppercase; margin-top:3px; }
+  .bt-table { border:1px solid var(--border); border-radius:8px; overflow:hidden; animation:fadeUp 0.4s 0.2s ease both; }
+  .bt-row { display:grid; grid-template-columns:80px 60px 1fr 80px 80px 80px; padding:9px 14px; border-bottom:1px solid var(--border); font-size:12px; align-items:center; }
+  .bt-row:last-child { border-bottom:none; }
+  .bt-header { background:rgba(255,255,255,0.02); font-size:9px; color:var(--muted); letter-spacing:1.5px; text-transform:uppercase; }
+  .bt-loading { text-align:center; padding:60px 20px; color:var(--dim); }
+  .bt-error { background:rgba(255,78,106,0.08); border:1px solid rgba(255,78,106,0.2); border-radius:8px; padding:16px 20px; color:var(--sell); font-size:12px; margin-bottom:20px; }
 </style>
 </head>
 <body>
@@ -622,6 +635,9 @@
     </div>
     <div class="nav-item" onclick="setView('portfolio')" id="nav-portfolio">
       <span class="nav-icon">◬</span> Portfolio
+    </div>
+    <div class="nav-item" onclick="setView('backtest')" id="nav-backtest">
+      <span class="nav-icon">⏱</span> Backtest
     </div>
     <div class="sidebar-divider"></div>
     <div class="sidebar-label">Strategy</div>
@@ -906,7 +922,7 @@ function reconcilePositions() {
 // ── Navigation ─────────────────────────────────────────────────────────────
 function setView(v) {
   state.view = v;
-  ['stocks','signals','industries','portfolio'].forEach(id => {
+  ['stocks','signals','industries','portfolio','backtest'].forEach(id => {
     document.getElementById(`nav-${id}`).classList.toggle('active', id === v);
   });
   render();
@@ -1331,6 +1347,201 @@ function renderPortfolioView() {
   `;
 }
 
+// ── Backtest state ─────────────────────────────────────────────────────────
+let btState = { loading: false, data: null, error: null, days: 60 };
+
+async function runBacktest(days) {
+  btState.loading = true;
+  btState.error = null;
+  btState.days = days || btState.days;
+  render();
+  try {
+    const res = await fetch(`${API}/backtest?days=${btState.days}`);
+    if (!res.ok) throw new Error('API error');
+    btState.data = await res.json();
+    if (btState.data.error) throw new Error(btState.data.error);
+  } catch(e) {
+    btState.error = e.message || 'Backtest failed — Yahoo Finance may be blocking requests from the server.';
+    btState.data = null;
+  }
+  btState.loading = false;
+  render();
+}
+
+function drawChart(canvasId, portCurve, spyCurve) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width  = canvas.offsetWidth;
+  const H = canvas.height = canvas.offsetHeight;
+
+  const allVals = [...portCurve, ...spyCurve].map(d => d.value);
+  const minV = Math.min(...allVals) * 0.998;
+  const maxV = Math.max(...allVals) * 1.002;
+  const pad  = { t: 20, r: 16, b: 30, l: 52 };
+  const cW   = W - pad.l - pad.r;
+  const cH   = H - pad.t - pad.b;
+
+  const toX = i => pad.l + (i / (portCurve.length - 1)) * cW;
+  const toY = v => pad.t + cH - ((v - minV) / (maxV - minV)) * cH;
+
+  // Background
+  ctx.fillStyle = '#0e1318';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid lines
+  ctx.strokeStyle = '#1c2530';
+  ctx.lineWidth = 0.5;
+  for (let g = 0; g <= 4; g++) {
+    const y = pad.t + (g / 4) * cH;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
+    const val = maxV - (g / 4) * (maxV - minV);
+    ctx.fillStyle = '#3a4a5a';
+    ctx.font = '9px DM Mono, monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(val.toFixed(1), pad.l - 4, y + 3);
+  }
+
+  // Zero line (100)
+  const zeroY = toY(100);
+  ctx.strokeStyle = '#253040';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(pad.l, zeroY); ctx.lineTo(W - pad.r, zeroY); ctx.stroke();
+  ctx.setLineDash([]);
+
+  function drawLine(curve, color, glowColor) {
+    // Glow
+    ctx.shadowColor = glowColor;
+    ctx.shadowBlur = 8;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    curve.forEach((d, i) => {
+      const x = toX(i), y = toY(d.value);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  drawLine(spyCurve,  '#5a6e82', '#5a6e82');
+  drawLine(portCurve, portCurve[portCurve.length-1].value >= 100 ? '#00e5a0' : '#ff4e6a',
+           portCurve[portCurve.length-1].value >= 100 ? '#00e5a0' : '#ff4e6a');
+
+  // X-axis date labels
+  ctx.fillStyle = '#3a4a5a';
+  ctx.font = '9px DM Mono, monospace';
+  ctx.textAlign = 'center';
+  ctx.shadowBlur = 0;
+  const labelStep = Math.ceil(portCurve.length / 6);
+  portCurve.forEach((d, i) => {
+    if (i % labelStep === 0 || i === portCurve.length - 1) {
+      ctx.fillText(d.date.slice(5), toX(i), H - 8);
+    }
+  });
+
+  // Legend
+  ctx.font = '10px DM Mono, monospace';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = portCurve[portCurve.length-1].value >= 100 ? '#00e5a0' : '#ff4e6a';
+  ctx.fillText('● Portfolio', pad.l + 4, pad.t + 14);
+  ctx.fillStyle = '#5a6e82';
+  ctx.fillText('● SPY', pad.l + 80, pad.t + 14);
+}
+
+function renderBacktestView() {
+  if (!btState.data && !btState.loading && !btState.error) {
+    // Auto-trigger on first view
+    setTimeout(() => runBacktest(60), 100);
+  }
+
+  const dayBtns = [30, 60, 90].map(d =>
+    `<button onclick="runBacktest(${d})" style="padding:6px 14px;border-radius:4px;border:1px solid ${btState.days===d?'var(--accent)':'var(--border)'};background:${btState.days===d?'rgba(33,150,243,0.1)':'transparent'};color:${btState.days===d?'var(--accent)':'var(--dim)'};font-family:var(--font-mono);font-size:11px;cursor:pointer;margin-right:6px">${d}d</button>`
+  ).join('');
+
+  let body = '';
+
+  if (btState.loading) {
+    body = `<div class="bt-loading">
+      <div style="font-size:28px;margin-bottom:12px">⏱</div>
+      <div>Running backtest — fetching ${btState.days} days of price history…</div>
+      <div style="font-size:11px;margin-top:6px;color:var(--muted)">This takes 15–30 seconds for all positions</div>
+    </div>`;
+  } else if (btState.error) {
+    body = `<div class="bt-error">⚠ ${btState.error}</div>`;
+  } else if (btState.data) {
+    const s = btState.data.summary;
+    const portRet = s.portfolio_return;
+    const spyRet  = s.spy_return;
+    const alpha   = s.alpha;
+    const col = v => v >= 0 ? 'var(--buy)' : 'var(--sell)';
+    const fmt = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+
+    body = `
+      <div class="bt-stat-grid">
+        <div class="bt-stat">
+          <div class="bt-stat-val" style="color:${col(portRet)}">${fmt(portRet)}</div>
+          <div class="bt-stat-lbl">Portfolio Return</div>
+        </div>
+        <div class="bt-stat">
+          <div class="bt-stat-val" style="color:${col(spyRet)}">${fmt(spyRet)}</div>
+          <div class="bt-stat-lbl">SPY Return</div>
+        </div>
+        <div class="bt-stat">
+          <div class="bt-stat-val" style="color:${col(alpha)}">${fmt(alpha)}</div>
+          <div class="bt-stat-lbl">Alpha</div>
+        </div>
+        <div class="bt-stat">
+          <div class="bt-stat-val">${s.annualized_vol_pct}%</div>
+          <div class="bt-stat-lbl">Ann. Volatility</div>
+        </div>
+        <div class="bt-stat">
+          <div class="bt-stat-val" style="color:${col(s.sharpe_ratio)}">${s.sharpe_ratio.toFixed(2)}</div>
+          <div class="bt-stat-lbl">Sharpe Ratio</div>
+        </div>
+      </div>
+
+      <div class="bt-chart"><canvas id="bt-canvas" class="bt-canvas"></canvas></div>
+
+      <div style="font-size:11px;color:var(--dim);margin-bottom:16px">
+        ${s.start_date} → ${s.end_date} &nbsp;·&nbsp; ${s.trading_days} trading days &nbsp;·&nbsp;
+        ${s.long_count} longs &nbsp;·&nbsp; ${s.short_count} shorts
+      </div>
+
+      <div class="bt-table">
+        <div class="bt-row bt-header">
+          <span>TICKER</span><span>SIDE</span><span>INDUSTRY</span>
+          <span>ENTRY</span><span>EXIT</span><span>RETURN</span>
+        </div>
+        ${btState.data.positions.map(p => `
+          <div class="bt-row">
+            <span style="font-family:var(--font-head);font-weight:700;color:var(--bright)">${p.ticker}</span>
+            <span>${p.side === 'LONG'
+              ? '<span class="signal-pill pill-BUY" style="font-size:9px;padding:2px 7px">LONG</span>'
+              : '<span class="signal-pill pill-SELL" style="font-size:9px;padding:2px 7px">SHORT</span>'}</span>
+            <span style="font-size:10px;color:var(--dim)">${(p.sector||'').replace('Information Technology','Tech').replace('Consumer Discretionary','Cons Disc')}</span>
+            <span style="font-size:11px;color:var(--dim)">$${p.start_price?.toFixed(2)||'—'}</span>
+            <span style="font-size:11px;color:var(--dim)">$${p.end_price?.toFixed(2)||'—'}</span>
+            <span style="font-weight:600;color:${p.return_pct >= 0 ? 'var(--buy)' : 'var(--sell)'}">${p.return_pct >= 0 ? '+' : ''}${p.return_pct?.toFixed(2)||'—'}%</span>
+          </div>`).join('')}
+      </div>`;
+  }
+
+  return `
+    <div class="page-header">
+      <div>
+        <div class="page-title">Backtest</div>
+        <div class="page-subtitle">Historical performance of current signals vs S&P 500</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">${dayBtns}</div>
+    </div>
+    ${body}
+  `;
+}
+
+// After render, draw chart if backtest data is available
+const _origRender = render;
 function render() {
   const view = document.getElementById('app-view');
   if (state.loading) { view.innerHTML = renderLoading(); return; }
@@ -1338,6 +1549,14 @@ function render() {
   else if (state.view === 'signals')    view.innerHTML = renderSignalsView();
   else if (state.view === 'industries') view.innerHTML = renderIndustriesView();
   else if (state.view === 'portfolio')  view.innerHTML = renderPortfolioView();
+  else if (state.view === 'backtest')   view.innerHTML = renderBacktestView();
+
+  // Draw chart after DOM update
+  if (state.view === 'backtest' && btState.data) {
+    requestAnimationFrame(() => {
+      drawChart('bt-canvas', btState.data.equity_curve, btState.data.spy_curve);
+    });
+  }
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────

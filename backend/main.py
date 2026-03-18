@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 from backend.app.api.routes import router
+from backend.app.api.backtest import backtest_router
 from backend.app.core.config import settings
 from backend.app.db.session import Base, engine
 
@@ -86,6 +87,7 @@ app.add_middleware(
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(router)
+app.include_router(backtest_router)
 
 
 # ── Global exception handler ──────────────────────────────────────────────────
