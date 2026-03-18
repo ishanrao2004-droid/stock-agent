@@ -20,7 +20,7 @@ engine = create_engine(
     pool_pre_ping=True,      # Detect stale connections before use
     pool_size=10,
     max_overflow=20,
-    echo=(settings.app_env == "development"),
+    echo=False  # Disabled to prevent log flooding,
 )
 
 # ── Session factory ──────────────────────────────────────────────────────────
