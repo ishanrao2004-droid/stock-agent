@@ -56,6 +56,7 @@ def _signal_to_schema(s) -> StockAnalytics:
         industry_size=s.industry_size,
         signal=s.signal,
         explanation=s.explanation,
+        position_weight=getattr(s, "position_weight", 0.0),
     )
 
 

@@ -1222,9 +1222,11 @@ function renderPortfolioView() {
   // Count positions that changed signal since last refresh
   const exited = Object.values(state.positions).filter(p => !p.active).length;
 
-  function positionRows(stocks, weight, side) {
+  function positionRows(stocks, side) {
     if (!stocks.length) return '<div style="color:var(--muted);padding:12px 0;font-size:12px">No positions</div>';
-    return stocks.map(s => {
+    // Sort by conviction weight descending
+    const sorted = [...stocks].sort((a,b) => (b.position_weight||0) - (a.position_weight||0));
+    return sorted.map(s => {
       const pos = state.positions[s.ticker];
       const p = state.prices[s.ticker];
       const days = pos ? daysSince(pos.entryDate) : null;
@@ -1233,12 +1235,19 @@ function renderPortfolioView() {
                     : '';
       const priceStr = p ? `<span class="portfolio-price">$${p.price.toLocaleString()}</span>` : '<span style="color:var(--muted)">—</span>';
       const pnl = pos ? pnlCell(pos, p ? p.price : null, side) : '';
+      // Conviction weight from API (normalized, 0→1)
+      const wt = s.position_weight ? (s.position_weight * 100).toFixed(1) : '—';
+      // Weight bar width
+      const barW = s.position_weight ? Math.round(s.position_weight * 60) : 0;
       return `
         <div class="portfolio-row" onclick="openDetail('${s.ticker}')" style="cursor:pointer">
           <span class="portfolio-ticker">${s.ticker}</span>
           <span style="font-size:10px;color:var(--dim);flex:1;padding:0 6px">${s.industry.replace('Information Technology','Tech').replace('Consumer Discretionary','Cons Disc').replace('Communication Services','Comm Svcs').replace('Consumer Staples','Cons Stpl')}</span>
           ${daysStr}
-          <span style="font-size:10px;color:var(--dim);margin:0 8px">${weight}%</span>
+          <span style="display:flex;align-items:center;gap:5px;margin:0 8px">
+            <span style="font-size:10px;color:var(--accent);min-width:36px">${wt}%</span>
+            <div style="height:3px;width:${barW}px;background:var(--accent);border-radius:2px;opacity:0.6"></div>
+          </span>
           ${priceStr}
           <span style="margin-left:8px">${pnl}</span>
         </div>`;
@@ -1317,11 +1326,11 @@ function renderPortfolioView() {
           <span style="font-size:9px;color:var(--muted);letter-spacing:1px">TICKER</span>
           <span style="font-size:9px;color:var(--muted);letter-spacing:1px">SECTOR</span>
           <span style="font-size:9px;color:var(--muted);letter-spacing:1px">HELD</span>
-          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">WT</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">CONVICTION</span>
           <span style="font-size:9px;color:var(--muted);letter-spacing:1px">PRICE</span>
           <span style="font-size:9px;color:var(--muted);letter-spacing:1px">P&L</span>
         </div>
-        ${positionRows(longs, longWeight, 'long')}
+        ${positionRows(longs, 'long')}
       </div>
       <div class="portfolio-card">
         <div class="portfolio-card-title short">▼ Short Book — ${shorts.length} positions · ${shortWeight}% each</div>
@@ -1329,11 +1338,11 @@ function renderPortfolioView() {
           <span style="font-size:9px;color:var(--muted);letter-spacing:1px">TICKER</span>
           <span style="font-size:9px;color:var(--muted);letter-spacing:1px">SECTOR</span>
           <span style="font-size:9px;color:var(--muted);letter-spacing:1px">HELD</span>
-          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">WT</span>
+          <span style="font-size:9px;color:var(--muted);letter-spacing:1px">CONVICTION</span>
           <span style="font-size:9px;color:var(--muted);letter-spacing:1px">PRICE</span>
           <span style="font-size:9px;color:var(--muted);letter-spacing:1px">P&L</span>
         </div>
-        ${positionRows(shorts, shortWeight, 'short')}
+        ${positionRows(shorts, 'short')}
       </div>
     </div>
 

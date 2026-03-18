@@ -32,6 +32,7 @@ class StockSignal:
     industry_size: int         # total stocks in industry
     signal: Signal
     explanation: str
+    position_weight: float = 0.0  # conviction-based weight (0.0 for HOLD)
 
 
 def compute_signal(
@@ -41,14 +42,22 @@ def compute_signal(
     momentum: float,
     rank: int,
     industry_size: int,
+    coverage_count: int = 0,
 ) -> StockSignal:
     """
     Apply Boni Womack strategy rules to produce a BUY / SELL / HOLD signal.
 
     Rules:
-      BUY  → score >= 4.0  AND  momentum > 0  AND  rank in top 25% of industry
-      SELL → score <= 2.5  AND  momentum < 0  AND  rank in bottom 25% of industry
+      BUY  → score >= 4.3  AND  momentum > 0  AND  rank in top 20% of industry
+             AND coverage >= 5 analysts
+      SELL → score <= 2.0  AND  momentum < 0  AND  rank in bottom 20% of industry
+             AND coverage >= 5 analysts
       HOLD → everything else
+
+    Position weight (score-weighted conviction):
+      BUY weight  = (score - buy_threshold) / (5.0 - buy_threshold)  normalized
+      SELL weight = (sell_threshold - score) / (sell_threshold - 1.0) normalized
+      Weights are raw here; the caller normalizes across all positions.
 
     Returns a StockSignal with a plain-English explanation.
     """
@@ -62,34 +71,54 @@ def compute_signal(
     has_negative_momentum = momentum < 0
 
     # ── BUY conditions ───────────────────────────────────────────────────────
+    has_min_coverage = coverage_count >= settings.min_coverage
+
     if (
         score >= settings.buy_score_threshold
         and has_positive_momentum
         and is_top_quartile
+        and has_min_coverage
     ):
+        # Conviction weight: how far above the threshold is this score?
+        # Score of 4.3 → weight ~0.0, score of 5.0 → weight ~1.0
+        raw_weight = (score - settings.buy_score_threshold) / (5.0 - settings.buy_score_threshold)
+        # Also factor in momentum strength (normalize momentum 0→1 capped at 1)
+        momentum_boost = min(abs(momentum) / 0.5, 1.0)
+        buy_weight = round(raw_weight * 0.7 + momentum_boost * 0.3, 4)
+
         explanation = (
             f"{ticker} earns a BUY signal: consensus score of {score:.2f} "
             f"(≥{settings.buy_score_threshold}), positive 30-day momentum "
-            f"(+{momentum:.2f}), and ranks #{rank} of {industry_size} in "
-            f"{industry} (top {settings.top_quartile_cutoff*100:.0f}%)."
+            f"(+{momentum:.2f}), ranks #{rank} of {industry_size} in "
+            f"{industry} (top {settings.top_quartile_cutoff*100:.0f}%), "
+            f"and {coverage_count} analysts covering it. "
+            f"Conviction weight: {buy_weight:.2f}."
         )
         return StockSignal(ticker, industry, score, momentum, rank,
-                           industry_size, "BUY", explanation)
+                           industry_size, "BUY", explanation, buy_weight)
 
     # ── SELL conditions ──────────────────────────────────────────────────────
     if (
         score <= settings.sell_score_threshold
         and has_negative_momentum
         and is_bottom_quartile
+        and has_min_coverage
     ):
+        # Conviction weight: how far below the threshold is this score?
+        raw_weight = (settings.sell_score_threshold - score) / (settings.sell_score_threshold - 1.0)
+        momentum_boost = min(abs(momentum) / 0.5, 1.0)
+        sell_weight = round(raw_weight * 0.7 + momentum_boost * 0.3, 4)
+
         explanation = (
             f"{ticker} earns a SELL signal: weak consensus score of {score:.2f} "
             f"(≤{settings.sell_score_threshold}), negative 30-day momentum "
-            f"({momentum:.2f}), and ranks #{rank} of {industry_size} in "
-            f"{industry} (bottom {(1-settings.bottom_quartile_cutoff)*100:.0f}%)."
+            f"({momentum:.2f}), ranks #{rank} of {industry_size} in "
+            f"{industry} (bottom {(1-settings.bottom_quartile_cutoff)*100:.0f}%), "
+            f"and {coverage_count} analysts covering it. "
+            f"Conviction weight: {sell_weight:.2f}."
         )
         return StockSignal(ticker, industry, score, momentum, rank,
-                           industry_size, "SELL", explanation)
+                           industry_size, "SELL", explanation, sell_weight)
 
     # ── HOLD (default) ───────────────────────────────────────────────────────
     reasons: list[str] = []

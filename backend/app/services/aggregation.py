@@ -67,7 +67,7 @@ def _compute_weighted_score(group: pd.DataFrame) -> float:
     More recent ratings are given higher weight using an exponential decay
     function. This ensures stale ratings have less influence than fresh ones.
     """
-    now = pd.Timestamp.utcnow().tz_localize(None).tz_localize(None)  # tz-naive to match DB timestamps
+    now = pd.Timestamp.utcnow().tz_localize(None)  # tz-naive to match DB timestamps
     # Age in days; clip to avoid zero-weight for today's ratings
     age_days = ((now - group["rating_date"]).dt.total_seconds() / 86400).clip(lower=0.5)
     # Exponential decay: weight = e^(-age/30) — half-life of ~30 days
@@ -84,7 +84,7 @@ def _compute_momentum(group: pd.DataFrame) -> float:
     Positive momentum = analysts are upgrading; negative = downgrading.
     Returns 0.0 if there are not enough data points to compute both windows.
     """
-    now = pd.Timestamp.utcnow().tz_localize(None).tz_localize(None)  # tz-naive to match DB timestamps
+    now = pd.Timestamp.utcnow().tz_localize(None)  # tz-naive to match DB timestamps
     recent_cutoff = now - pd.Timedelta(days=settings.momentum_recent_days)
     prior_cutoff = recent_cutoff - pd.Timedelta(days=settings.momentum_prior_days)
 
@@ -150,10 +150,26 @@ def get_all_stock_analytics(db: Session) -> list[StockSignal]:
             momentum=row["momentum"],
             rank=int(row["rank"]),
             industry_size=int(row["industry_size"]),
+            coverage_count=int(row["coverage_count"]),
         )
-        # Attach coverage count (not in StockSignal dataclass — pass via __dict__)
         signal.__dict__["coverage_count"] = int(row["coverage_count"])
         signals.append(signal)
+
+    # ── Step 4: Normalize position weights within longs and shorts ────────────
+    # Each side sums to 1.0 so weights are portfolio allocation fractions
+    long_signals  = [s for s in signals if s.signal == "BUY"]
+    short_signals = [s for s in signals if s.signal == "SELL"]
+
+    for group in [long_signals, short_signals]:
+        total_weight = sum(s.position_weight for s in group)
+        if total_weight > 0:
+            for s in group:
+                s.position_weight = round(s.position_weight / total_weight, 4)
+        elif group:
+            # Fallback: equal weight if all weights are 0
+            eq = round(1.0 / len(group), 4)
+            for s in group:
+                s.position_weight = eq
 
     logger.info(f"Aggregated {len(signals)} tickers successfully.")
     return signals

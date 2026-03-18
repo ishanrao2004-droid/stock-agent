@@ -62,6 +62,10 @@ class StockAnalytics(BaseModel):
     explanation: str = Field(
         description="Human-readable rationale for the signal"
     )
+    position_weight: float = Field(
+        default=0.0,
+        description="Conviction-based portfolio weight (normalized, 0.0 for HOLD)"
+    )
 
 
 # ── Industry summary ─────────────────────────────────────────────────────────

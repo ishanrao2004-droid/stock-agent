@@ -30,10 +30,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # ── Strategy thresholds (Boni Womack) ───────────────────────────────────
-    buy_score_threshold: float = 4.0
-    sell_score_threshold: float = 2.5
-    top_quartile_cutoff: float = 0.25   # top 25% in industry = BUY eligible
-    bottom_quartile_cutoff: float = 0.75  # bottom 25% in industry = SELL eligible
+    buy_score_threshold: float = 4.3   # Tightened from 4.0 — only strong consensus buys
+    sell_score_threshold: float = 2.0   # Tightened from 2.5 — only strong consensus sells
+    top_quartile_cutoff: float = 0.20   # Tightened to top 20% — higher quality bar
+    bottom_quartile_cutoff: float = 0.80  # Tightened to bottom 20% — higher quality bar
+
+    # ── Minimum analyst coverage to qualify for BUY/SELL signal ────────────
+    min_coverage: int = 5              # Require at least 5 analyst ratings
 
     # ── Momentum window (days) ──────────────────────────────────────────────
     momentum_recent_days: int = 30
