@@ -764,13 +764,14 @@ async function fetchPrices() {
       if (res.ok) {
         const data = await res.json();
         state.prices = { ...state.prices, ...data };
-        render(); // re-render after each batch so prices appear progressively
+        // prices updated silently - full render happens at end
       }
     }
   } catch (e) {
     // Prices are optional — silently fail
   }
   state.pricesLoading = false;
+  render(); // single render after all prices loaded
 }
 
 // ── Navigation ─────────────────────────────────────────────────────────────
@@ -1055,6 +1056,9 @@ function render() {
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 fetchData();
+
+// Auto-refresh everything every 5 minutes (300,000 ms)
+setInterval(fetchData, 300000);
 </script>
 </body>
 </html>
