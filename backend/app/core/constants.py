@@ -43,6 +43,7 @@ RATING_SCORE_MAP: dict[str, float] = {
     "strongsell": 1.0,
     "conviction sell": 1.0,
 
+}
 # ── Mock GICS sector classification ─────────────────────────────────────────
 # Maps ticker → GICS sector name. In production this would come from a
 # reference database or the GICS API.
