@@ -203,3 +203,39 @@ def trigger_ingestion(
         tickers_processed=len(target_tickers),
         records_inserted=total_inserted,
     )
+
+
+# ── GET /prices ──────────────────────────────────────────────────────────────
+
+@router.get("/prices", tags=["stocks"])
+async def get_prices(tickers: str = Query(..., description="Comma-separated tickers, e.g. AAPL,MSFT,NVDA")):
+    """
+    Fetch live stock prices from Yahoo Finance for a list of tickers.
+    Returns a dict of ticker -> {price, change, change_pct}.
+    """
+    import httpx
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    symbols = ",".join(ticker_list)
+    results = {}
+
+    try:
+        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+        quotes = data.get("quoteResponse", {}).get("result", [])
+        for q in quotes:
+            sym = q.get("symbol", "")
+            results[sym] = {
+                "price":      round(q.get("regularMarketPrice", 0), 2),
+                "change":     round(q.get("regularMarketChange", 0), 2),
+                "change_pct": round(q.get("regularMarketChangePercent", 0), 2),
+                "currency":   q.get("currency", "USD"),
+            }
+    except Exception as exc:
+        logger.warning(f"Failed to fetch prices: {exc}")
+
+    return results

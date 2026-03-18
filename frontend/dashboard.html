@@ -391,7 +391,7 @@
   .detail-industry { font-size: 12px; color: var(--dim); margin-top: 2px; }
 
   .detail-grid {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
     margin-bottom: 20px;
   }
 
@@ -562,6 +562,13 @@
     from { opacity: 0; transform: translateY(20px) scale(0.98); }
     to   { opacity: 1; transform: translateY(0)    scale(1); }
   }
+
+  .price-cell { font-family: var(--font-head); font-size: 13px; font-weight: 700; color: var(--bright); }
+  .price-change { font-size: 10px; margin-top: 1px; }
+  .price-change.pos { color: var(--buy); }
+  .price-change.neg { color: var(--sell); }
+  .price-change.zero { color: var(--muted); }
+  .price-loading { color: var(--muted); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -625,6 +632,8 @@ let state = {
   stocks: [],
   industries: [],
   signals: [],
+  prices: {},
+  pricesLoading: false,
   loading: false,
   error: null,
   filter: 'ALL',
@@ -737,6 +746,25 @@ async function fetchData() {
     'LAST UPDATE: ' + new Date().toLocaleTimeString();
   state.loading = false;
   render();
+
+  // Fetch live prices in the background (non-blocking)
+  fetchPrices();
+}
+
+async function fetchPrices() {
+  if (!state.stocks.length) return;
+  state.pricesLoading = true;
+  try {
+    const tickers = state.stocks.map(s => s.ticker).join(',');
+    const res = await fetch(`${API}/prices?tickers=${tickers}`);
+    if (res.ok) {
+      state.prices = await res.json();
+      render(); // re-render with prices populated
+    }
+  } catch (e) {
+    // Prices are optional — silently fail
+  }
+  state.pricesLoading = false;
 }
 
 // ── Navigation ─────────────────────────────────────────────────────────────
@@ -781,6 +809,10 @@ function openDetail(ticker) {
       <div class="detail-industry">${s.industry}</div>
     </div>
     <div class="detail-grid">
+      <div class="detail-metric">
+        <div class="detail-metric-label">Live Price</div>
+        <div class="detail-metric-value" style="color:var(--bright)">${(()=>{const p=state.prices[s.ticker];if(!p)return '—';const col=p.change>0?'var(--buy)':p.change<0?'var(--sell)':'var(--muted)';return '$'+p.price.toLocaleString()+' <span style="font-size:13px;color:'+col+'">'+(p.change>=0?'+':'')+p.change_pct.toFixed(2)+'%</span>';})()}</div>
+      </div>
       <div class="detail-metric">
         <div class="detail-metric-label">Consensus Score</div>
         <div class="detail-metric-value" style="color:${scoreColor(s.score)}">${s.score.toFixed(2)}</div>
@@ -869,6 +901,7 @@ function renderStocksView() {
       <table>
         <thead><tr>
           <th>Ticker</th>
+          <th>Price</th>
           <th>Score</th>
           <th>Momentum</th>
           <th>Rank</th>
@@ -888,6 +921,14 @@ function renderStocksView() {
                     </div>
                   </div>
                 </td>
+                <td>${(() => {
+                  const p = state.prices[s.ticker];
+                  if (state.pricesLoading && !p) return '<span class="price-loading">loading…</span>';
+                  if (!p) return '<span class="price-loading">—</span>';
+                  const cls = p.change > 0 ? 'pos' : p.change < 0 ? 'neg' : 'zero';
+                  const arrow = p.change > 0 ? '▲' : p.change < 0 ? '▼' : '';
+                  return `<div class="price-cell">$${p.price.toLocaleString()}</div><div class="price-change ${cls}">${arrow} ${Math.abs(p.change_pct).toFixed(2)}%</div>`;
+                })()}</td>
                 <td>
                   <div class="score-bar-wrap">
                     <span class="score-val" style="color:${scoreColor(s.score)}">${s.score.toFixed(2)}</span>
