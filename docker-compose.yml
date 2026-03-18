@@ -1,0 +1,80 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: stock_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis (Celery broker + result backend) ───────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
+  api:
+    build: .
+    command: >
+      sh -c "alembic upgrade head &&
+             python scripts/load_sample_data.py &&
+             uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/stock_agent
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  # ── Celery worker ────────────────────────────────────────────────────────────
+  worker:
+    build: .
+    command: celery -A backend.app.tasks.worker worker --loglevel=info --concurrency=2
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/stock_agent
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  # ── Celery beat (scheduler) ──────────────────────────────────────────────────
+  beat:
+    build: .
+    command: celery -A backend.app.tasks.worker beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/stock_agent
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
+    volumes:
+      - .:/app
+
+volumes:
+  postgres_data:
