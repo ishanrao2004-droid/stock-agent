@@ -67,7 +67,7 @@ def _compute_weighted_score(group: pd.DataFrame) -> float:
     More recent ratings are given higher weight using an exponential decay
     function. This ensures stale ratings have less influence than fresh ones.
     """
-    now = pd.Timestamp.utcnow().tz_localize(None)  # tz-naive to match DB timestamps
+    now = pd.Timestamp.utcnow().tz_localize(None).tz_localize(None)  # tz-naive to match DB timestamps
     # Age in days; clip to avoid zero-weight for today's ratings
     age_days = ((now - group["rating_date"]).dt.total_seconds() / 86400).clip(lower=0.5)
     # Exponential decay: weight = e^(-age/30) — half-life of ~30 days
@@ -84,7 +84,7 @@ def _compute_momentum(group: pd.DataFrame) -> float:
     Positive momentum = analysts are upgrading; negative = downgrading.
     Returns 0.0 if there are not enough data points to compute both windows.
     """
-    now = pd.Timestamp.utcnow().tz_localize(None)  # tz-naive to match DB timestamps
+    now = pd.Timestamp.utcnow().tz_localize(None).tz_localize(None)  # tz-naive to match DB timestamps
     recent_cutoff = now - pd.Timedelta(days=settings.momentum_recent_days)
     prior_cutoff = recent_cutoff - pd.Timedelta(days=settings.momentum_prior_days)
 
