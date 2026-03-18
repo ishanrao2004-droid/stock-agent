@@ -313,3 +313,4 @@ def get_industry(ticker: str) -> str:
 "MLM":  "Materials",
 "ECL":  "Materials",
 "PPG":  "Materials",
+}
