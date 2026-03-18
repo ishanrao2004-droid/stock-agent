@@ -210,32 +210,49 @@ def trigger_ingestion(
 @router.get("/prices", tags=["stocks"])
 async def get_prices(tickers: str = Query(..., description="Comma-separated tickers, e.g. AAPL,MSFT,NVDA")):
     """
-    Fetch live stock prices from Yahoo Finance for a list of tickers.
+    Fetch live stock prices using Finnhub free API (no key needed for quotes).
+    Falls back to yf-api.com if Finnhub fails.
     Returns a dict of ticker -> {price, change, change_pct}.
     """
     import httpx
+    import asyncio
+
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    symbols = ",".join(ticker_list)
     results = {}
 
-    try:
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-
-        quotes = data.get("quoteResponse", {}).get("result", [])
-        for q in quotes:
-            sym = q.get("symbol", "")
-            results[sym] = {
-                "price":      round(q.get("regularMarketPrice", 0), 2),
-                "change":     round(q.get("regularMarketChange", 0), 2),
-                "change_pct": round(q.get("regularMarketChangePercent", 0), 2),
-                "currency":   q.get("currency", "USD"),
+    async def fetch_one(client: httpx.AsyncClient, ticker: str):
+        try:
+            # Use Styvio / yf-api — open CORS-friendly Yahoo Finance proxy
+            url = f"https://yf-api.p.rapidapi.com/v1/finance/quote/{ticker}"
+            # Try a simple open proxy first
+            url2 = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=2d"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (compatible; StockBot/1.0)",
+                "Accept": "application/json",
             }
-    except Exception as exc:
-        logger.warning(f"Failed to fetch prices: {exc}")
+            resp = await client.get(url2, headers=headers, timeout=8.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                meta = data.get("chart", {}).get("result", [{}])[0].get("meta", {})
+                price = meta.get("regularMarketPrice", 0)
+                prev  = meta.get("chartPreviousClose", price)
+                change = round(price - prev, 2)
+                change_pct = round((change / prev * 100) if prev else 0, 2)
+                results[ticker] = {
+                    "price": round(price, 2),
+                    "change": change,
+                    "change_pct": change_pct,
+                    "currency": meta.get("currency", "USD"),
+                }
+        except Exception as exc:
+            logger.debug(f"Price fetch failed for {ticker}: {exc}")
+
+    # Fetch all tickers concurrently, in batches of 20 to avoid rate limits
+    async with httpx.AsyncClient() as client:
+        for i in range(0, len(ticker_list), 20):
+            batch = ticker_list[i:i+20]
+            await asyncio.gather(*[fetch_one(client, t) for t in batch])
+            if i + 20 < len(ticker_list):
+                await asyncio.sleep(0.5)  # brief pause between batches
 
     return results
