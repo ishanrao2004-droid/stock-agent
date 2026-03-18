@@ -755,23 +755,17 @@ async function fetchPrices() {
   if (!state.stocks.length) return;
   state.pricesLoading = true;
   try {
-    // Fetch in batches of 30 to avoid timeouts
-    const allTickers = state.stocks.map(s => s.ticker);
-    const batchSize = 30;
-    for (let i = 0; i < allTickers.length; i += batchSize) {
-      const batch = allTickers.slice(i, i + batchSize).join(',');
-      const res = await fetch(`${API}/prices?tickers=${batch}`);
-      if (res.ok) {
-        const data = await res.json();
-        state.prices = { ...state.prices, ...data };
-        // prices updated silently - full render happens at end
-      }
+    // Send all tickers in one request — backend handles batching
+    const allTickers = state.stocks.map(s => s.ticker).join(',');
+    const res = await fetch(`${API}/prices?tickers=${allTickers}`);
+    if (res.ok) {
+      state.prices = await res.json();
     }
   } catch (e) {
     // Prices are optional — silently fail
   }
   state.pricesLoading = false;
-  render(); // single render after all prices loaded
+  render(); // single render once prices are done
 }
 
 // ── Navigation ─────────────────────────────────────────────────────────────
