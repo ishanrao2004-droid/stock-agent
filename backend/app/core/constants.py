@@ -314,3 +314,10 @@ def get_industry(ticker: str) -> str:
 "ECL":  "Materials",
 "PPG":  "Materials",
 }
+
+DEFAULT_INDUSTRY = "Unknown"
+
+
+def get_industry(ticker: str) -> str:
+    """Return the GICS sector for a ticker, defaulting to 'Unknown'."""
+    return TICKER_INDUSTRY_MAP.get(ticker.upper(), DEFAULT_INDUSTRY)
