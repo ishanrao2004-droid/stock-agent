@@ -817,6 +817,19 @@ async function fetchPrices() {
   }
   state.pricesLoading = false;
   reconcilePositions(); // update position tracking with latest signals + prices
+
+  // Backfill entryPrice for any positions that were created before prices loaded
+  let backfilled = false;
+  Object.entries(state.positions).forEach(([ticker, pos]) => {
+    if (pos.active && !pos.entryPrice && state.prices[ticker]) {
+      pos.entryPrice = state.prices[ticker].price;
+      backfilled = true;
+    }
+  });
+  if (backfilled) {
+    try { sessionStorage.setItem('portfolio_positions', JSON.stringify(state.positions)); } catch(e) {}
+  }
+
   computePortfolioReturn(); // calculate gross portfolio return
   fetchSPY(); // fetch SPY benchmark (async, triggers another render when done)
   render(); // single render once prices are done
@@ -854,12 +867,16 @@ function computePortfolioReturn() {
   let counted = 0;
   active.forEach(([ticker, pos]) => {
     const p = state.prices[ticker];
-    if (!p || !pos.entryPrice) return;
+    if (!p) return;
     let ret;
-    if (pos.signal === 'BUY') {
-      ret = (p.price - pos.entryPrice) / pos.entryPrice * 100;
+    if (pos.entryPrice) {
+      // Use actual entry price for true P&L
+      ret = pos.signal === 'BUY'
+        ? (p.price - pos.entryPrice) / pos.entryPrice * 100
+        : (pos.entryPrice - p.price) / pos.entryPrice * 100;
     } else {
-      ret = (pos.entryPrice - p.price) / pos.entryPrice * 100;
+      // Fallback: use today's % change as a proxy until entry price is set
+      ret = pos.signal === 'BUY' ? p.change_pct : -p.change_pct;
     }
     totalReturn += ret;
     counted++;
