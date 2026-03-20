@@ -639,6 +639,9 @@
     <div class="nav-item" onclick="setView('backtest')" id="nav-backtest">
       <span class="nav-icon">⏱</span> Backtest
     </div>
+    <div class="nav-item" onclick="setView('neutral')" id="nav-neutral">
+      <span class="nav-icon">⊕</span> Mkt Neutral
+    </div>
     <div class="sidebar-divider"></div>
     <div class="sidebar-label">Strategy</div>
     <div style="padding: 0 20px; font-size: 11px; color: var(--muted); line-height: 1.9;">
@@ -806,8 +809,8 @@ async function fetchPrices() {
   if (!state.stocks.length) return;
   state.pricesLoading = true;
   try {
-    // Send all tickers in one request — backend handles batching
-    const allTickers = state.stocks.map(s => s.ticker).join(',');
+    // Include SPY in the main price fetch so benchmark is always available
+    const allTickers = ['SPY', ...state.stocks.map(s => s.ticker)].join(',');
     const res = await fetch(`${API}/prices?tickers=${allTickers}`);
     if (res.ok) {
       state.prices = await res.json();
@@ -827,11 +830,27 @@ async function fetchPrices() {
     }
   });
   if (backfilled) {
-    try { localStorage.setItem('portfolio_positions', JSON.stringify(state.positions)); } catch(e) {}
+    try { sessionStorage.setItem('portfolio_positions', JSON.stringify(state.positions)); } catch(e) {}
+  }
+
+  // Set SPY baseline from prices already loaded (SPY included in main fetch)
+  if (state.prices['SPY']) {
+    const spyData = state.prices['SPY'];
+    state.spyPrice = spyData.price;
+    if (!state.spyBaselinePrice) {
+      const saved = sessionStorage.getItem('spy_inception_price');
+      if (saved) {
+        state.spyBaselinePrice = parseFloat(saved);
+      } else {
+        state.spyBaselinePrice = spyData.price;
+        sessionStorage.setItem('spy_inception_price', String(state.spyBaselinePrice));
+        sessionStorage.setItem('spy_inception_date', new Date().toISOString().slice(0, 10));
+      }
+    }
+    state.spyReturn = ((state.spyPrice - state.spyBaselinePrice) / state.spyBaselinePrice) * 100;
   }
 
   computePortfolioReturn(); // calculate gross portfolio return
-  fetchSPY(); // fetch SPY benchmark (async, triggers another render when done)
   render(); // single render once prices are done
 }
 
@@ -948,7 +967,7 @@ function reconcilePositions() {
 // ── Navigation ─────────────────────────────────────────────────────────────
 function setView(v) {
   state.view = v;
-  ['stocks','signals','industries','portfolio','backtest'].forEach(id => {
+  ['stocks','signals','industries','portfolio','backtest','neutral'].forEach(id => {
     document.getElementById(`nav-${id}`).classList.toggle('active', id === v);
   });
   render();
@@ -1576,6 +1595,181 @@ function renderBacktestView() {
   `;
 }
 
+// ── Market Neutral Portfolio ───────────────────────────────────────────────
+// Beta-neutral construction: weights each position by 1/beta so the
+// weighted-average beta of longs equals the weighted-average beta of shorts.
+// Dollar neutral: total long notional = total short notional.
+// Sector neutral: no sector exceeds 20% of either book.
+
+// Mock beta values — in production fetch from /prices endpoint
+// (Yahoo Finance returns beta in the quote response)
+const BETA_MAP = {
+  NVDA:2.1, AMD:1.9, META:1.4, TSLA:2.0, AMZN:1.3, GOOGL:1.1, MSFT:0.9,
+  AAPL:1.2, PLTR:1.8, CRWD:1.6, PANW:1.5, SNOW:1.7, CRM:1.3, NOW:1.2,
+  INTU:1.1, ADBE:1.2, QCOM:1.1, TXN:1.0, INTC:0.9, ORCL:0.9, IBM:0.7,
+  JPM:1.1, BAC:1.2, GS:1.3, MS:1.3, V:1.0, MA:1.1, C:1.2, AXP:1.1,
+  COF:1.2, SCHW:1.2, BLK:1.1, WFC:1.1, PNC:1.0, USB:0.9, TFC:1.0,
+  JNJ:0.6, UNH:0.8, LLY:0.5, ABBV:0.6, MRK:0.6, PFE:0.6, TMO:0.9,
+  ABT:0.8, DHR:0.9, BMY:0.6, AMGN:0.7, GILD:0.6, BIIB:0.8, REGN:0.5,
+  VRTX:0.6, ISRG:1.1, SYK:1.0, BSX:1.1, MDT:0.8, CVS:0.7, CI:0.8,
+  XOM:1.0, CVX:1.0, COP:1.1, SLB:1.2, EOG:1.1, OXY:1.2, HAL:1.3,
+  BA:1.3, CAT:1.1, GE:1.2, HON:0.9, UPS:0.9, RTX:0.9, LMT:0.7,
+  NOC:0.7, DE:1.0, MMM:0.9, PG:0.6, KO:0.6, PEP:0.6, WMT:0.6,
+  COST:0.9, MO:0.7, NEE:0.7, DUK:0.4, SO:0.4, LIN:0.8, APD:0.9,
+  SPG:1.3, AMT:0.9, EQIX:0.9, DLR:0.8, PSA:0.8, VICI:0.9,
+};
+
+function getBeta(ticker) {
+  return BETA_MAP[ticker] || 1.0; // default beta of 1.0 if unknown
+}
+
+function buildNeutralPortfolio() {
+  const longs  = state.stocks.filter(s => s.signal === 'BUY');
+  const shorts = state.stocks.filter(s => s.signal === 'SELL');
+
+  // Step 1: Conviction score per stock (same as before)
+  function conviction(s) {
+    return s.position_weight > 0 ? s.position_weight : (1 / (longs.length + shorts.length));
+  }
+
+  // Step 2: Beta-adjust each position weight → raw_weight = conviction / beta
+  function betaAdjustedWeights(stocks) {
+    const raw = stocks.map(s => ({ ...s, rawW: conviction(s) / getBeta(s.ticker) }));
+    const total = raw.reduce((a, b) => a + b.rawW, 0);
+    return raw.map(s => ({ ...s, weight: total > 0 ? s.rawW / total : 1 / stocks.length }));
+  }
+
+  const longWeighted  = betaAdjustedWeights(longs);
+  const shortWeighted = betaAdjustedWeights(shorts);
+
+  // Step 3: Sector cap — no sector > 20% of either book
+  function applySectorCap(weighted, cap=0.20) {
+    const sectorTotals = {};
+    weighted.forEach(s => {
+      sectorTotals[s.industry] = (sectorTotals[s.industry] || 0) + s.weight;
+    });
+    // Scale down over-weight sectors
+    const adjusted = weighted.map(s => {
+      const sectorW = sectorTotals[s.industry];
+      const scale = sectorW > cap ? cap / sectorW : 1.0;
+      return { ...s, weight: s.weight * scale };
+    });
+    // Re-normalize
+    const total = adjusted.reduce((a, b) => a + b.weight, 0);
+    return adjusted.map(s => ({ ...s, weight: total > 0 ? s.weight / total : 0 }));
+  }
+
+  const longFinal  = applySectorCap(longWeighted);
+  const shortFinal = applySectorCap(shortWeighted);
+
+  // Step 4: Compute portfolio betas
+  const longBeta  = longFinal.reduce((a, s)  => a + s.weight * getBeta(s.ticker), 0);
+  const shortBeta = shortFinal.reduce((a, s) => a + s.weight * getBeta(s.ticker), 0);
+  const netBeta   = longBeta - shortBeta;
+
+  return { longFinal, shortFinal, longBeta, shortBeta, netBeta };
+}
+
+function renderNeutralView() {
+  const { longFinal, shortFinal, longBeta, shortBeta, netBeta } = buildNeutralPortfolio();
+
+  function posRows(stocks, side) {
+    if (!stocks.length) return '<div style="color:var(--muted);padding:12px 0;font-size:12px">No positions</div>';
+    return [...stocks].sort((a,b) => b.weight - a.weight).map(s => {
+      const p = state.prices[s.ticker];
+      const priceStr = p ? `$${p.price.toLocaleString()}` : '—';
+      const chg = p ? `<span style="color:${p.change_pct>=0?'var(--buy)':'var(--sell)'};font-size:10px">${p.change_pct>=0?'+':''}${p.change_pct?.toFixed(2)}%</span>` : '';
+      const beta = getBeta(s.ticker);
+      const barW = Math.round(s.weight * 80);
+      return `
+        <div class="portfolio-row" onclick="openDetail('${s.ticker}')" style="cursor:pointer">
+          <span class="portfolio-ticker">${s.ticker}</span>
+          <span style="font-size:10px;color:var(--dim);flex:1;padding:0 6px">${s.industry.split(' ')[0]}</span>
+          <span style="font-size:10px;color:var(--dim);margin-right:8px">β ${beta.toFixed(1)}</span>
+          <span style="display:flex;align-items:center;gap:4px;margin-right:10px">
+            <span style="font-size:10px;color:var(--accent);min-width:38px">${(s.weight*100).toFixed(1)}%</span>
+            <div style="height:3px;width:${barW}px;background:var(--accent);border-radius:2px;opacity:0.5"></div>
+          </span>
+          <span style="font-size:12px;color:var(--text)">${priceStr}</span>
+          <span style="margin-left:8px">${chg}</span>
+        </div>`;
+    }).join('');
+  }
+
+  const betaCol = Math.abs(netBeta) < 0.10 ? 'var(--buy)' : Math.abs(netBeta) < 0.25 ? 'var(--hold)' : 'var(--sell)';
+
+  return `
+    <div class="page-header">
+      <div>
+        <div class="page-title">Market Neutral</div>
+        <div class="page-subtitle">Beta-neutral · Dollar-neutral · Sector-capped at 20%</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px;animation:fadeUp 0.4s ease both">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px">
+        <div style="font-size:9px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase">Net Beta</div>
+        <div style="font-family:var(--font-head);font-size:22px;font-weight:700;color:${betaCol}">${netBeta>=0?'+':''}${netBeta.toFixed(3)}</div>
+        <div style="font-size:9px;color:var(--dim);margin-top:2px">target ≈ 0.00</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px">
+        <div style="font-size:9px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase">Long Beta</div>
+        <div style="font-family:var(--font-head);font-size:22px;font-weight:700;color:var(--buy)">${longBeta.toFixed(3)}</div>
+        <div style="font-size:9px;color:var(--dim);margin-top:2px">${longFinal.length} positions</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px">
+        <div style="font-size:9px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase">Short Beta</div>
+        <div style="font-family:var(--font-head);font-size:22px;font-weight:700;color:var(--sell)">${shortBeta.toFixed(3)}</div>
+        <div style="font-size:9px;color:var(--dim);margin-top:2px">${shortFinal.length} positions</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px">
+        <div style="font-size:9px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase">Sector Cap</div>
+        <div style="font-family:var(--font-head);font-size:22px;font-weight:700;color:var(--accent)">20%</div>
+        <div style="font-size:9px;color:var(--dim);margin-top:2px">per GICS sector</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px">
+        <div style="font-size:9px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase">Dollar Neutral</div>
+        <div style="font-family:var(--font-head);font-size:22px;font-weight:700;color:var(--buy)">✓</div>
+        <div style="font-size:9px;color:var(--dim);margin-top:2px">long = short notional</div>
+      </div>
+    </div>
+
+    <div style="background:rgba(33,150,243,0.05);border:1px solid rgba(33,150,243,0.15);border-radius:8px;padding:12px 16px;font-size:11px;color:var(--dim);margin-bottom:18px;line-height:1.8">
+      <strong style="color:var(--text)">Beta-neutral weighting:</strong> Each position's weight = conviction score ÷ beta, then normalized within each book.
+      High-beta stocks get smaller allocations so the book's weighted-average beta matches the other side. &nbsp;·&nbsp;
+      <strong style="color:var(--text)">Sector cap:</strong> No single GICS sector exceeds 20% of either the long or short book. &nbsp;·&nbsp;
+      <strong style="color:var(--text)">Beta values</strong> shown are estimates — connect Finnhub API for live betas.
+    </div>
+
+    <div class="portfolio-grid">
+      <div class="portfolio-card">
+        <div class="portfolio-card-title long">▲ Long Book — ${longFinal.length} positions · β-weighted</div>
+        <div style="display:grid;grid-template-columns:60px 1fr 50px 80px 70px 60px;gap:0;padding:4px 0 6px;border-bottom:1px solid var(--border);margin-bottom:2px">
+          <span style="font-size:9px;color:var(--muted)">TICKER</span>
+          <span style="font-size:9px;color:var(--muted)">SECTOR</span>
+          <span style="font-size:9px;color:var(--muted)">BETA</span>
+          <span style="font-size:9px;color:var(--muted)">WEIGHT</span>
+          <span style="font-size:9px;color:var(--muted)">PRICE</span>
+          <span style="font-size:9px;color:var(--muted)">CHG</span>
+        </div>
+        ${posRows(longFinal, 'long')}
+      </div>
+      <div class="portfolio-card">
+        <div class="portfolio-card-title short">▼ Short Book — ${shortFinal.length} positions · β-weighted</div>
+        <div style="display:grid;grid-template-columns:60px 1fr 50px 80px 70px 60px;gap:0;padding:4px 0 6px;border-bottom:1px solid var(--border);margin-bottom:2px">
+          <span style="font-size:9px;color:var(--muted)">TICKER</span>
+          <span style="font-size:9px;color:var(--muted)">SECTOR</span>
+          <span style="font-size:9px;color:var(--muted)">BETA</span>
+          <span style="font-size:9px;color:var(--muted)">WEIGHT</span>
+          <span style="font-size:9px;color:var(--muted)">PRICE</span>
+          <span style="font-size:9px;color:var(--muted)">CHG</span>
+        </div>
+        ${posRows(shortFinal, 'short')}
+      </div>
+    </div>
+  `;
+}
+
 // After render, draw chart if backtest data is available
 const _origRender = render;
 function render() {
@@ -1586,6 +1780,7 @@ function render() {
   else if (state.view === 'industries') view.innerHTML = renderIndustriesView();
   else if (state.view === 'portfolio')  view.innerHTML = renderPortfolioView();
   else if (state.view === 'backtest')   view.innerHTML = renderBacktestView();
+  else if (state.view === 'neutral')    view.innerHTML = renderNeutralView();
 
   // Draw chart after DOM update
   if (state.view === 'backtest' && btState.data) {
