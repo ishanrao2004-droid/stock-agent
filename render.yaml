@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: stock-agent
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: sh -c "alembic upgrade head && python scripts/load_sample_data.py && uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHONPATH
+        value: /opt/render/project/src
+      - key: LOG_LEVEL
+        value: WARNING
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: stock-agent-db
+          property: connectionString
+      - key: REDIS_URL
+        value: redis://localhost:6379/0
+    autoDeploy: true
+
+databases:
+  - name: stock-agent-db
+    databaseName: stock_agent
+    user: stock_agent
+    plan: free
